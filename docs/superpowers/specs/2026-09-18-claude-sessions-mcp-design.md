@@ -55,7 +55,9 @@ anthropic-version: 2023-06-01
 |---|---|
 | `POST /v1/code/sessions` | Body: `environment_id`, `title`, `tags[]`, `config{effort_level, permission_mode, origin}`. Returns `{session: {...}}`. **This call alone starts the worker** as a child of the bridge process, before any prompt is sent. |
 | `POST /v1/code/sessions/{id}/events` | Body: `{events:[{event_type:"user_message", payload:{type:"user", message:{role:"user", content:"..."}}}]}`. The field is `event_type`, not `type` — `type` returns 400. |
-| `GET /v1/code/sessions/{id}/events?limit=N` | Returns `{data:[...], resume_cursor}`. Event types observed: `user`, `assistant`, `system`, `control_request`, `env_manager_log`. |
+| `GET /v1/code/sessions/{id}/events?limit=N` | Returns `{data:[...], resume_cursor}`. Event types observed: `user`, `assistant`, `system`, `control_request`, `env_manager_log`, `rate_limit_event`, `result`. |
+| `GET /v1/code/sessions/{id}/events/stream` | Server-sent events, same Bearer token. Two named events: `session_update` (bridge connectivity, e.g. `{"connection_status":"connected"}`) and `client_event` (a session event in the same shape the list endpoint returns), plus `:keepalive` comments. Each `client_event` carries an SSE `id:`, and `Last-Event-ID` resumes from it — verified: reconnecting at id 8 replayed 9 through 12. |
+| `result` event | Ends a turn and carries its outcome: `subtype` (`success`), `is_error`, `result` (the final assistant text), `num_turns`, `stop_reason`, `permission_denials`, `usage`, `duration_ms`, `total_cost_usd`. This is the signal that the session has finished what it was asked to do. |
 | `GET /v1/code/sessions?limit=N` | Returns `{data:[...], next_cursor, resume_token}`. **Query filters are ignored** — a request naming a non-existent `environment_id` still returns a full page. Filter client-side. Archived sessions are included. |
 | `GET /v1/code/sessions/{id}` | Returns the session wrapped as `{response_shape: {...}}`, unlike the other calls' `{session: ...}`. |
 | `POST /v1/code/sessions/{id}/archive` | `status: active → archived`, `status_bucket → completed`, the worker stops and the bridge slot is freed. History is kept. |
@@ -139,10 +141,27 @@ it to read than rendered tables.
 | `spawn_session` | `instance`, `prompt`, `title?`, `effort?`, `permission_mode?`, `caller?` | Creates the session, tags it `mcp:claude-sessions-mcp` and `spawned-by:<caller>`, posts the prompt, returns the session id |
 | `send_message` | `session_id`, `text` | Posts a `user_message` to a live session |
 | `read_session` | `session_id`, `limit?`, `cursor?`, `verbose?` | Condensed events: user and assistant turns plus status changes. `control_request` and `env_manager_log` only under `verbose`. Returns the API's `resume_cursor` for continuation |
-| `wait_for_idle` | `session_id`, `timeout_s` | Polls until the worker is idle, then returns the last assistant turn. Polling, not streaming — by design |
+| `wait_for_idle` | `session_id`, `timeout_s` | Opens the event stream and waits for the turn's `result`, then returns its text along with `stop_reason`, `permission_denials` and cost. See below |
 | `archive_session` | `session_id` | Stops the session, keeping its history |
 | `unarchive_session` | `session_id` | Returns it to active. **The tool description states plainly that this does not restart the worker**, so a calling agent does not conclude it has woken a colleague |
 | `delete_session` | `session_id` | Deletes the session and its worker |
+
+### Waiting is streamed, subscribing is not
+
+`wait_for_idle` opens `GET /events/stream` for the duration of the call, waits
+for the `result` event, and closes. If the connection drops it reconnects with
+`Last-Event-ID` and continues where it left off, so a dropped stream costs a
+reconnect rather than a missed answer. `timeout_s` bounds the wait; on timeout
+the tool says the session is still working rather than pretending otherwise.
+
+The distinction worth keeping: a stream scoped to one call needs no registry, no
+background reconnect loop and no state between calls. A *subscription* — holding
+streams open across every live session to push notifications — would need all
+three, and is out of scope. Waiting inside a call is the cheap half of
+streaming; keeping watch is the expensive half.
+
+Nothing else streams. `read_session` reads history through the list endpoint,
+where a cursor is the right tool.
 
 ## Safety rails
 
@@ -214,5 +233,6 @@ Vitest.
   path for it turns up, `unarchive_session` gets honest behaviour and its caveat
   disappears.
 - macOS support in `discovery`.
-- Whether polling in `wait_for_idle` proves annoying enough to justify the event
-  stream (`/events/stream`) that was rejected during design.
+- Whether a background subscription ever earns its keep — pushing "your
+  colleague finished" without anyone waiting on the call. It needs a registry
+  and reconnect logic that the current design does without.
