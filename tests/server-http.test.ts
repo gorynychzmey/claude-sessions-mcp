@@ -2,6 +2,7 @@ import { createServer, request as httpRequest, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { afterEach, describe, expect, it } from "vitest";
 import { createRequestHandler, loopbackAllowedHosts } from "../src/server.js";
+import { VERSION } from "../src/version.js";
 import type { ToolDeps } from "../src/tools.js";
 
 // The tools are never invoked here: initialize and tools/list only need the
@@ -59,6 +60,9 @@ describe("the HTTP endpoint", () => {
 
     expect(first.status).toBe(200);
     expect(first.text).toContain("claude-sessions-mcp");
+    // The handshake reports the package's version, not a copy of it that can
+    // drift: a release bumps package.json and nothing else.
+    expect(first.text).toContain(`"version":"${VERSION}"`);
     for (const answer of [second, third]) {
       expect(answer.status).toBe(200);
       expect(answer.text).toContain("spawn_session");

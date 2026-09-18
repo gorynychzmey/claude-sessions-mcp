@@ -4,11 +4,14 @@
   "private": true,
   "license": "MIT",
   "type": "module",
-  "engines": { "node": ">=22" },
+  "engines": {
+    "node": ">=22"
+  },
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "test": "vitest run",
-    "start": "node dist/server.js"
+    "start": "node dist/server.js",
+    "release": "node scripts/release.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.0",

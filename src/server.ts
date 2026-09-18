@@ -4,6 +4,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { z } from "zod";
 import { SessionsApi } from "./api.js";
+import { VERSION } from "./version.js";
 import { createTokenReader } from "./credentials.js";
 import { defaultDiscoveryDeps } from "./discovery.js";
 import {
@@ -42,7 +43,7 @@ const asJson = (value: unknown) => ({
 });
 
 export function buildServer(deps: ToolDeps): McpServer {
-  const server = new McpServer({ name: "claude-sessions-mcp", version: "0.1.0" });
+  const server = new McpServer({ name: "claude-sessions-mcp", version: VERSION });
 
   server.registerTool("list_instances", {
     description: "Remote Control bridges running on this machine, with their environment ids and how many workers each has in use.",

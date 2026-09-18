@@ -87,6 +87,20 @@ calls.
 - Every created session is tagged `mcp:claude-sessions-mcp` and
   `spawned-by:<caller>`.
 
+## Releasing
+
+The version lives in one place, `package.json`; the server reports it in the
+MCP handshake, and a test asserts the two agree.
+
+```
+npm run release -- patch | minor | major | X.Y.Z
+```
+
+The script refuses a dirty tree or a branch other than `master`, checks that
+the target tag is free and that `origin` is not ahead, runs the build and the
+tests, then bumps the version, commits and tags `vX.Y.Z`. Pushing is left to
+you — it prints the command. The tag marks a version; it triggers nothing.
+
 ## License
 
 MIT — see [LICENSE](LICENSE).
