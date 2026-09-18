@@ -196,22 +196,96 @@ export async function sendMessage(
 /** Pause before reconnecting after a dropped stream, so a connection that fails
  * instantly cannot spin the reconnect loop. */
 const RECONNECT_DELAY_MS = 1000;
+/** How often a wait re-checks that the session is still running. */
+const STATUS_POLL_MS = 5000;
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve) => {
+    const done = (): void => {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", done);
+      resolve();
+    };
+    const timer = setTimeout(done, ms);
+    signal?.addEventListener("abort", done, { once: true });
+  });
+}
+
+/** Why a wait ended. */
+export type WaitOutcome = "result" | "archived" | "deleted" | "timeout";
+
+/**
+ * Whether the session has stopped in a way that means no result is coming.
+ *
+ * Archiving kills the running turn without emitting anything on the event
+ * stream — verified against the live API: a stream held open across an
+ * archive carries no result, no status frame, and does not close. So the
+ * only way to notice is to ask.
+ *
+ * A status check that fails for any other reason returns null: losing one
+ * poll must not end a wait that the stream may still finish.
+ */
+async function sessionStopReason(
+  deps: ToolDeps,
+  sessionId: string,
+): Promise<"archived" | "deleted" | null> {
+  try {
+    const session = await deps.api.getSession(sessionId);
+    return session.status === "archived" ? "archived" : null;
+  } catch (error) {
+    if (error instanceof ApiError && error.status === 404) return "deleted";
+    return null;
+  }
+}
+
+function stoppedAnswer(reason: "archived" | "deleted"): {
+  finished: false;
+  outcome: "archived" | "deleted";
+  note: string;
+} {
+  return {
+    finished: false,
+    outcome: reason,
+    note: reason === "archived"
+      ? "The session was archived, so its turn was cut short and no result will arrive. " +
+        "Use read_session to see how far it got."
+      : "The session no longer exists, so nothing can arrive for it.",
+  };
 }
 
 export async function waitForIdle(
   deps: ToolDeps,
   args: { session_id: string; timeout_s?: number },
-): Promise<{ finished: boolean; result?: TurnResult; note?: string }> {
+): Promise<{ finished: boolean; outcome: WaitOutcome; result?: TurnResult; note?: string }> {
   const timeoutMs = (args.timeout_s ?? 300) * 1000;
   const deadline = Date.now() + timeoutMs;
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   let lastEventId: string | undefined;
+  let stopped: "archived" | "deleted" | null = null;
 
   try {
+    // Asked before opening the stream: a session that is already archived or
+    // gone would otherwise be waited on for the full timeout.
+    stopped = await sessionStopReason(deps, args.session_id);
+    if (stopped) return stoppedAnswer(stopped);
+
+    // The stream cannot report an archive, so a poll runs alongside it and
+    // aborts the wait when the session stops.
+    const watcher = (async (): Promise<void> => {
+      while (!controller.signal.aborted && Date.now() < deadline) {
+        await sleep(STATUS_POLL_MS, controller.signal);
+        if (controller.signal.aborted) return;
+        const reason = await sessionStopReason(deps, args.session_id);
+        if (reason) {
+          stopped = reason;
+          controller.abort();
+          return;
+        }
+      }
+    })();
+    void watcher;
+
     while (Date.now() < deadline) {
       try {
         for await (const frame of deps.api.streamEvents(args.session_id, {
@@ -221,7 +295,7 @@ export async function waitForIdle(
           if (frame.id) lastEventId = frame.id;
           const payload = frame.payload as { event_type?: string; payload?: Record<string, unknown> };
           if (payload?.event_type === "result" && payload.payload) {
-            return { finished: true, result: toTurnResult(payload.payload) };
+            return { finished: true, outcome: "result", result: toTurnResult(payload.payload) };
           }
         }
       } catch (error) {
@@ -235,6 +309,7 @@ export async function waitForIdle(
           throw error;
         }
       }
+      if (stopped) return stoppedAnswer(stopped);
       if (controller.signal.aborted) break;
       // Every reconnect waits, not only the ones that follow an error: a
       // stream that ends cleanly and immediately (an idle connection the
@@ -242,8 +317,10 @@ export async function waitForIdle(
       // be reopened thousands of times inside one timeout.
       await sleep(RECONNECT_DELAY_MS);
     }
+    if (stopped) return stoppedAnswer(stopped);
     return {
       finished: false,
+      outcome: "timeout",
       note: `No result within ${args.timeout_s ?? 300}s — the session is still working. ` +
         "Call again to keep waiting, or read_session to see where it is.",
     };

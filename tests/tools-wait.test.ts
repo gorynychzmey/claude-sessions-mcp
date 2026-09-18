@@ -16,19 +16,80 @@ const resultEvent = {
 
 function depsWithStream(
   frames: unknown[][],
-): { toolDeps: ToolDeps; streamEvents: ReturnType<typeof vi.fn> } {
+  /** Session status per getSession call; the last entry repeats. */
+  statuses: string[] = ["active"],
+): {
+  toolDeps: ToolDeps;
+  streamEvents: ReturnType<typeof vi.fn>;
+  getSession: ReturnType<typeof vi.fn>;
+} {
   let call = 0;
   const streamEvents = vi.fn(async function* (_id: string, _opts: { lastEventId?: string }) {
     for (const frame of frames[call] ?? []) yield frame;
     call++;
   });
+  let statusCall = 0;
+  const getSession = vi.fn(async (id: string) => {
+    const status = statuses[Math.min(statusCall, statuses.length - 1)] ?? "active";
+    statusCall += 1;
+    return { id, status };
+  });
   return {
-    toolDeps: { api: { streamEvents }, discovery: {}, maxSpawned: 3 } as unknown as ToolDeps,
+    toolDeps: { api: { streamEvents, getSession }, discovery: {}, maxSpawned: 3 } as unknown as ToolDeps,
     streamEvents,
+    getSession,
   };
 }
 
 describe("wait_for_idle", () => {
+  it("stops immediately when the session is already archived", async () => {
+    const { toolDeps, streamEvents } = depsWithStream([[resultEvent]], ["archived"]);
+
+    const outcome = await waitForIdle(toolDeps, { session_id: "s-1", timeout_s: 60 });
+
+    expect(outcome).toMatchObject({ finished: false, outcome: "archived" });
+    expect(outcome.note).toMatch(/archived/i);
+    // An archived session never emits a result, so opening the stream at all
+    // would be waiting for something that cannot arrive.
+    expect(streamEvents).not.toHaveBeenCalled();
+  });
+
+  it("stops waiting once the session is archived mid-wait", async () => {
+    vi.useFakeTimers();
+    // The stream stays silent; only the status poll can end this wait.
+    const { toolDeps } = depsWithStream([], ["active", "active", "archived"]);
+
+    const pending = waitForIdle(toolDeps, { session_id: "s-1", timeout_s: 600 });
+    await vi.advanceTimersByTimeAsync(20_000);
+    const outcome = await pending;
+
+    expect(outcome).toMatchObject({ finished: false, outcome: "archived" });
+  });
+
+  it("stops waiting when the session has been deleted", async () => {
+    const { toolDeps, streamEvents } = depsWithStream([[resultEvent]]);
+    (toolDeps.api.getSession as unknown as ReturnType<typeof vi.fn>).mockRejectedValue(
+      new ApiError("Session s-1 not found", 404, null),
+    );
+
+    const outcome = await waitForIdle(toolDeps, { session_id: "s-1", timeout_s: 60 });
+
+    expect(outcome).toMatchObject({ finished: false, outcome: "deleted" });
+    expect(streamEvents).not.toHaveBeenCalled();
+  });
+
+  it("keeps waiting when a status check itself fails", async () => {
+    const { toolDeps } = depsWithStream([[resultEvent]]);
+    (toolDeps.api.getSession as unknown as ReturnType<typeof vi.fn>).mockRejectedValue(
+      new ApiError("upstream hiccup", 503, null),
+    );
+
+    const outcome = await waitForIdle(toolDeps, { session_id: "s-1", timeout_s: 60 });
+
+    // A failed status check must not be read as "the session is gone".
+    expect(outcome).toMatchObject({ finished: true, outcome: "result" });
+  });
+
   it("returns the turn's result", async () => {
     const { toolDeps } = depsWithStream([[
       { id: "11", event: "client_event", payload: { event_type: "assistant", payload: {} } },

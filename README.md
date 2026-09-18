@@ -70,7 +70,10 @@ file, both of which are only visible to that user.
 
 The server keeps no state between calls: no session registry, no database, no
 files of its own. `wait_for_idle` holds an event stream open for the duration
-of that one call; there are no subscriptions or background watchers.
+of that one call, and alongside it polls the session's status, because
+archiving a session cuts its turn short without emitting anything on the
+stream. Both end with the call: nothing is subscribed or watched between
+calls.
 
 ### Safety rails
 

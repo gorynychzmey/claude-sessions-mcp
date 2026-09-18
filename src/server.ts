@@ -86,7 +86,11 @@ export function buildServer(deps: ToolDeps): McpServer {
   }, async (args) => asJson(await readSession(deps, args)));
 
   server.registerTool("wait_for_idle", {
-    description: "Wait on the session's event stream until its current turn finishes, then return the answer, stop reason, permission denials and cost.",
+    description:
+      "Wait on the session's event stream until its current turn finishes, then return the answer, " +
+      "stop reason, permission denials and cost. Returns an `outcome` saying why the wait ended: " +
+      "`result` when the turn finished, `archived` or `deleted` when the session stopped and no " +
+      "result can arrive, `timeout` when it is still working.",
     inputSchema: { session_id: z.string(), timeout_s: z.number().int().positive().max(3600).optional() },
   }, async (args) => asJson(await waitForIdle(deps, args)));
 
