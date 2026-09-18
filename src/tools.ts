@@ -1,4 +1,4 @@
-import type { SessionsApi } from "./api.js";
+import { ApiError, type SessionsApi } from "./api.js";
 import { discoverInstances, type DiscoveryDeps } from "./discovery.js";
 import { SERVER_TAG, condenseEvents, toSummary, toTurnResult } from "./sessions.js";
 import type { BridgeInstance, TurnResult } from "./types.js";
@@ -130,6 +130,14 @@ export async function sendMessage(
  * from the last event id, so a dropped connection costs a reconnect rather
  * than the answer.
  */
+/** Pause before reconnecting after a dropped stream, so a connection that fails
+ * instantly cannot spin the reconnect loop. */
+const RECONNECT_DELAY_MS = 1000;
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 export async function waitForIdle(
   deps: ToolDeps,
   args: { session_id: string; timeout_s?: number },
@@ -155,7 +163,15 @@ export async function waitForIdle(
         }
       } catch (error) {
         if (controller.signal.aborted) break;
-        throw error;
+        // A 4xx (other than 429, which is a rate limit and heals on retry)
+        // is a broken request, not a broken connection: reconnecting would
+        // just repeat it silently until the timeout. Anything else — a
+        // thrown network error, a 5xx, a 429 — is treated as a dropped
+        // stream and reconnects from lastEventId after a short pause.
+        if (error instanceof ApiError && error.status !== 429 && error.status >= 400 && error.status < 500) {
+          throw error;
+        }
+        await sleep(RECONNECT_DELAY_MS);
       }
     }
     return {
