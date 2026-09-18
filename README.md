@@ -53,6 +53,7 @@ claude mcp add --transport http --scope user sessions http://127.0.0.1:8765/mcp
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
+| `HOST` | `127.0.0.1` | Interface to bind. Only `127.0.0.1`, `localhost` and `::1` are accepted — the server spawns agents, so it refuses to start on any other address. Requests carrying a foreign `Host` header are rejected as well. |
 | `PORT` | `8765` | Port the server listens on (loopback only). |
 | `CLAUDE_SESSIONS_MCP_MAX_SPAWNED` | `3` | Ceiling on sessions this server may have spawned and left active per bridge. |
 | `CLAUDE_CONFIG_DIR` | `~/.claude` | Where Claude Code keeps its config, including bridge pointer files. |
@@ -60,7 +61,25 @@ claude mcp add --transport http --scope user sessions http://127.0.0.1:8765/mcp
 
 ### Requirements
 
+Node.js 22 or newer (the code is ESM and uses ES2023 library features).
+
 Linux only — bridge discovery reads `/proc` to find running Remote Control
 servers and their workers. The server must run as the same user as the
 bridges it talks to: it reads their process table and the shared credentials
 file, both of which are only visible to that user.
+
+The server keeps no state between calls: no session registry, no database, no
+files of its own. `wait_for_idle` holds an event stream open for the duration
+of that one call; there are no subscriptions or background watchers.
+
+### Safety rails
+
+- `permission_mode` accepts `auto`, `acceptEdits`, `plan`, `manual` or
+  `dontAsk` only. `bypassPermissions` is refused outright, never downgraded.
+- Sessions can be spawned only in bridges discovered on this machine, never in
+  a raw environment id.
+- `CLAUDE_SESSIONS_MCP_MAX_SPAWNED` bounds how many active sessions this server
+  may have created per bridge; if that count cannot be established completely,
+  the spawn is refused rather than allowed.
+- Every created session is tagged `mcp:claude-sessions-mcp` and
+  `spawned-by:<caller>`.
