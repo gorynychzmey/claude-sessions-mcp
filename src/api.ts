@@ -222,7 +222,14 @@ export class SessionsApi {
       try {
         payload = JSON.parse(message.data);
       } catch {
-        continue; // a frame we cannot read is not a reason to end the wait
+        // A frame we cannot read is not a reason to end the wait — a later
+        // frame (e.g. the `result` frame Task 8 waits for) may still be
+        // fine — but it must leave a trail, or a consistently malformed
+        // frame would hang the caller with zero diagnostics.
+        console.warn(
+          `streamEvents: skipping unparseable frame id=${message.id ?? "no id"} data=${message.data.slice(0, 120)}`,
+        );
+        continue;
       }
       yield { id: message.id, event: message.event, payload };
     }
