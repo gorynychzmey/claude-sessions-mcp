@@ -1,4 +1,5 @@
 import type { TokenReader } from "./credentials.js";
+import { parseSse } from "./stream.js";
 
 export const DEFAULT_BASE_URL = "https://api.anthropic.com";
 
@@ -179,5 +180,51 @@ export class SessionsApi {
 
   async deleteSession(sessionId: string): Promise<void> {
     await this.request(`/${sessionId}`, { method: "DELETE" });
+  }
+
+  /**
+   * Live events for one session. Resumes from `lastEventId` when given, which
+   * is what makes a dropped connection cost a reconnect rather than a missed
+   * result.
+   */
+  async *streamEvents(
+    sessionId: string,
+    options: { lastEventId?: string; signal: AbortSignal },
+  ): AsyncGenerator<{ id: string | null; event: string | null; payload: unknown }> {
+    const headers: Record<string, string> = {
+      ...(await this.headers()),
+      accept: "text/event-stream",
+    };
+    if (options.lastEventId) headers["last-event-id"] = options.lastEventId;
+
+    const response = await this.fetchImpl(this.url(`/${sessionId}/events/stream`), {
+      headers,
+      signal: options.signal,
+    });
+    if (!response.ok || !response.body) {
+      throw new ApiError(
+        `stream ${sessionId} failed (${response.status})`,
+        response.status,
+        response.headers.get("request-id"),
+      );
+    }
+
+    const decoder = new TextDecoder();
+    const body = response.body;
+    async function* text(): AsyncGenerator<string> {
+      for await (const bytes of body as unknown as AsyncIterable<Uint8Array>) {
+        yield decoder.decode(bytes, { stream: true });
+      }
+    }
+
+    for await (const message of parseSse(text())) {
+      let payload: unknown = null;
+      try {
+        payload = JSON.parse(message.data);
+      } catch {
+        continue; // a frame we cannot read is not a reason to end the wait
+      }
+      yield { id: message.id, event: message.event, payload };
+    }
   }
 }
