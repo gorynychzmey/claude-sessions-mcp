@@ -83,3 +83,7 @@ of that one call; there are no subscriptions or background watchers.
   the spawn is refused rather than allowed.
 - Every created session is tagged `mcp:claude-sessions-mcp` and
   `spawned-by:<caller>`.
+
+## License
+
+MIT — see [LICENSE](LICENSE).
