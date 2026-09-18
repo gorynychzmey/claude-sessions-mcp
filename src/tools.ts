@@ -1,7 +1,7 @@
 import type { SessionsApi } from "./api.js";
 import { discoverInstances, type DiscoveryDeps } from "./discovery.js";
-import { SERVER_TAG, condenseEvents, toSummary } from "./sessions.js";
-import type { BridgeInstance } from "./types.js";
+import { SERVER_TAG, condenseEvents, toSummary, toTurnResult } from "./sessions.js";
+import type { BridgeInstance, TurnResult } from "./types.js";
 
 export interface ToolDeps {
   api: SessionsApi;
@@ -122,4 +122,49 @@ export async function sendMessage(
 ): Promise<{ delivered: true }> {
   await deps.api.postUserMessage(args.session_id, args.text);
   return { delivered: true };
+}
+
+/**
+ * Waits for the session's current turn to finish, on the event stream rather
+ * than by polling. A stream that ends before the result arrives is reopened
+ * from the last event id, so a dropped connection costs a reconnect rather
+ * than the answer.
+ */
+export async function waitForIdle(
+  deps: ToolDeps,
+  args: { session_id: string; timeout_s?: number },
+): Promise<{ finished: boolean; result?: TurnResult; note?: string }> {
+  const timeoutMs = (args.timeout_s ?? 300) * 1000;
+  const deadline = Date.now() + timeoutMs;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  let lastEventId: string | undefined;
+
+  try {
+    while (Date.now() < deadline) {
+      try {
+        for await (const frame of deps.api.streamEvents(args.session_id, {
+          lastEventId,
+          signal: controller.signal,
+        })) {
+          if (frame.id) lastEventId = frame.id;
+          const payload = frame.payload as { event_type?: string; payload?: Record<string, unknown> };
+          if (payload?.event_type === "result" && payload.payload) {
+            return { finished: true, result: toTurnResult(payload.payload) };
+          }
+        }
+      } catch (error) {
+        if (controller.signal.aborted) break;
+        throw error;
+      }
+    }
+    return {
+      finished: false,
+      note: `No result within ${args.timeout_s ?? 300}s — the session is still working. ` +
+        "Call again to keep waiting, or read_session to see where it is.",
+    };
+  } finally {
+    clearTimeout(timer);
+    controller.abort();
+  }
 }
