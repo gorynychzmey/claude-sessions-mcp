@@ -28,10 +28,19 @@ const spawned = await spawnSession(deps, {
 });
 console.log("spawned", spawned.session_id);
 
-const outcome = await waitForIdle(deps, { session_id: spawned.session_id, timeout_s: 180 });
-console.log("outcome", JSON.stringify(outcome, null, 2));
-
-await deleteSession(deps, { session_id: spawned.session_id });
-console.log("deleted");
+let outcome;
+try {
+  outcome = await waitForIdle(deps, { session_id: spawned.session_id, timeout_s: 180 });
+  console.log("outcome", JSON.stringify(outcome, null, 2));
+} finally {
+  // The delete has to run even when the wait throws, or the script leaves a
+  // live agent behind holding a bridge slot.
+  await deleteSession(deps, { session_id: spawned.session_id })
+    .then(() => console.log("deleted"))
+    .catch((error) => {
+      console.error(`could not delete ${spawned.session_id}:`, error);
+      process.exitCode = 1;
+    });
+}
 
 if (!outcome.finished || !outcome.result?.text.includes("E2E_OK")) process.exit(1);

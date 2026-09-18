@@ -26,10 +26,22 @@ export function createTokenReader(path: string): TokenReader {
       cached = null;
     },
     async read(): Promise<string> {
-      const info = await stat(path).catch(() => null);
-      if (info === null) {
+      let info;
+      try {
+        info = await stat(path);
+      } catch (error) {
+        const code = (error as NodeJS.ErrnoException).code;
+        if (code === "ENOENT") {
+          throw new CredentialsError(
+            `No Claude Code credentials at ${path}. Run \`claude /login\` on this machine.`,
+          );
+        }
+        // Anything else — EACCES, ENOTDIR, EIO — is a file that exists and
+        // cannot be read. Sending the user to `claude /login` would send them
+        // to fix the wrong thing.
         throw new CredentialsError(
-          `No Claude Code credentials at ${path}. Run \`claude /login\` on this machine.`,
+          `Cannot read the credentials file ${path} (${code ?? "unknown error"}: ` +
+          `${(error as Error).message}). The server must run as the user that owns that file.`,
         );
       }
       if (cached && cached.mtimeMs === info.mtimeMs) return cached.token;

@@ -37,6 +37,18 @@ describe("createTokenReader", () => {
   it("explains itself when the file is missing", async () => {
     const reader = createTokenReader("/nonexistent/credentials.json");
     await expect(reader.read()).rejects.toBeInstanceOf(CredentialsError);
+    await expect(reader.read()).rejects.toThrow(/claude \/login/);
+  });
+
+  it("does not blame a missing login when the file cannot be read", async () => {
+    // A regular file used as a directory component gives a deterministic
+    // non-ENOENT errno without depending on the test user's privileges.
+    const path = join(await credentialsFile("token-1"), "credentials.json");
+    const failure = await createTokenReader(path).read().catch((e: unknown) => e as Error);
+
+    expect(failure).toBeInstanceOf(CredentialsError);
+    expect(failure.message).toMatch(/ENOTDIR/);
+    expect(failure.message).not.toMatch(/\/login/);
   });
 
   it("explains itself when the file holds no OAuth token", async () => {
