@@ -106,6 +106,13 @@ Pushing the tag opens a **draft** release with generated notes
 and publish it by hand. Nothing else reacts to a tag: there is no build to
 trigger and nothing to deploy.
 
+Every push and pull request runs the build and the test suite
+(`.github/workflows/ci.yml`).
+
+Inside Claude Code, `/build [patch|minor|major|X.Y.Z]` walks the whole cycle:
+release script, tag push, both workflows, the draft notes, and a restart of the
+local service if one is installed. It stops short of publishing the release.
+
 ## License
 
 MIT — see [LICENSE](LICENSE).
