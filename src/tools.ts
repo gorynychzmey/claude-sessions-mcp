@@ -184,3 +184,29 @@ export async function waitForIdle(
     controller.abort();
   }
 }
+
+export async function archiveSession(
+  deps: ToolDeps,
+  args: { session_id: string },
+): Promise<{ session: ReturnType<typeof toSummary> }> {
+  return { session: toSummary(await deps.api.archiveSession(args.session_id)) };
+}
+
+export async function unarchiveSession(
+  deps: ToolDeps,
+  args: { session_id: string },
+): Promise<{ session: ReturnType<typeof toSummary>; note: string }> {
+  return {
+    session: toSummary(await deps.api.unarchiveSession(args.session_id)),
+    note: "The session is active again, but this does not restart the worker: " +
+      "messages sent now are stored and not executed until a client opens the session.",
+  };
+}
+
+export async function deleteSession(
+  deps: ToolDeps,
+  args: { session_id: string },
+): Promise<{ deleted: true }> {
+  await deps.api.deleteSession(args.session_id);
+  return { deleted: true };
+}
