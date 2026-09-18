@@ -99,7 +99,12 @@ npm run release -- patch | minor | major | X.Y.Z
 The script refuses a dirty tree or a branch other than `master`, checks that
 the target tag is free and that `origin` is not ahead, runs the build and the
 tests, then bumps the version, commits and tags `vX.Y.Z`. Pushing is left to
-you — it prints the command. The tag marks a version; it triggers nothing.
+you — it prints the command.
+
+Pushing the tag opens a **draft** release with generated notes
+(`.github/workflows/release-draft.yml`); edit it into something worth reading
+and publish it by hand. Nothing else reacts to a tag: there is no build to
+trigger and nothing to deploy.
 
 ## License
 
