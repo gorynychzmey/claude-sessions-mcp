@@ -141,11 +141,24 @@ export class SessionsApi {
     });
   }
 
+  /**
+   * One page of sessions. The API ignores query filters such as
+   * environment_id and includes archived sessions, so callers filter
+   * client-side on what comes back; `nextCursor` is what makes a complete
+   * count possible when the history is longer than a page.
+   */
+  async listSessionsPage(
+    options: { limit?: number; cursor?: string } = {},
+  ): Promise<{ sessions: RawSession[]; nextCursor: string | null }> {
+    const query = new URLSearchParams({ limit: String(options.limit ?? 100) });
+    if (options.cursor) query.set("cursor", options.cursor);
+    const body = await this.request(`?${query}`) as
+      { data?: RawSession[]; next_cursor?: string | null };
+    return { sessions: body.data ?? [], nextCursor: body.next_cursor ?? null };
+  }
+
   async listSessions(limit = 100): Promise<RawSession[]> {
-    // The API ignores query filters such as environment_id, so callers filter
-    // client-side on what comes back.
-    const body = await this.request(`?limit=${limit}`) as { data?: RawSession[] };
-    return body.data ?? [];
+    return (await this.listSessionsPage({ limit })).sessions;
   }
 
   async getSession(sessionId: string): Promise<RawSession> {

@@ -52,6 +52,18 @@ describe("SessionsApi", () => {
     expect((await api.getSession("s-1")).status).toBe("active");
   });
 
+  it("carries the cursor and hands back the next one", async () => {
+    const fetchImpl = vi.fn(async () => json({ data: [session], next_cursor: "page-2" }));
+    const api = new SessionsApi({ token, fetchImpl: fetchImpl as unknown as typeof fetch });
+
+    const page = await api.listSessionsPage({ limit: 100, cursor: "page-1" });
+
+    expect(page.nextCursor).toBe("page-2");
+    expect(page.sessions).toHaveLength(1);
+    expect(fetchImpl.mock.calls[0][0])
+      .toBe("https://api.anthropic.com/v1/code/sessions?limit=100&cursor=page-1");
+  });
+
   it("retries a 429 and then succeeds", async () => {
     const fetchImpl = vi.fn()
       .mockResolvedValueOnce(json({ error: { message: "slow down" } }, 429))

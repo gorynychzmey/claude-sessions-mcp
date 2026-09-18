@@ -17,12 +17,22 @@ async function instances(deps: ToolDeps): Promise<BridgeInstance[]> {
 
 export async function requireInstance(deps: ToolDeps, name: string): Promise<BridgeInstance> {
   const found = await instances(deps);
-  const match = found.find((i) => i.name === name);
-  if (!match) {
+  const matches = found.filter((i) => i.name === name);
+  if (matches.length === 0) {
     const known = found.map((i) => i.name).join(", ") || "none";
     throw new Error(`No running bridge named "${name}" on this machine. Running: ${known}.`);
   }
-  return match;
+  if (matches.length > 1) {
+    // Names fall back to basename(cwd), so two worktrees of one repository
+    // produce the same name. Picking the first match would start an agent in
+    // the wrong project's directory.
+    const candidates = matches.map((i) => `pid ${i.pid} in ${i.cwd}`).join("; ");
+    throw new Error(
+      `"${name}" matches ${matches.length} running bridges: ${candidates}. ` +
+      "Restart them with distinct --name values so the one you mean can be addressed.",
+    );
+  }
+  return matches[0]!;
 }
 
 export async function listInstances(deps: ToolDeps): Promise<{ instances: BridgeInstance[] }> {
@@ -62,6 +72,42 @@ export const ALLOWED_PERMISSION_MODES = [
 const DEFAULT_EFFORT = "medium";
 const TITLE_LIMIT = 60;
 
+/** Page size and page cap for the ceiling count. */
+const CEILING_PAGE_SIZE = 100;
+const CEILING_MAX_PAGES = 20;
+
+/**
+ * Counts this server's own live sessions in one environment, across every page
+ * of the session list. A single page would be an under-count: the list holds
+ * archived sessions too and ignores query filters, so with a long history this
+ * server's own sessions fall off the first page and the ceiling stops binding.
+ * If the list does not end within the page cap the count is incomplete, and an
+ * incomplete count fails closed rather than spawning.
+ */
+async function countOwnActiveSessions(deps: ToolDeps, environmentId: string): Promise<number> {
+  let cursor: string | undefined;
+  let count = 0;
+
+  for (let page = 0; page < CEILING_MAX_PAGES; page++) {
+    const { sessions, nextCursor } = await deps.api.listSessionsPage({
+      limit: CEILING_PAGE_SIZE,
+      cursor,
+    });
+    count += sessions.filter((s) =>
+      s.environment_id === environmentId &&
+      s.status === "active" &&
+      (s.tags ?? []).includes(SERVER_TAG)).length;
+    if (!nextCursor) return count;
+    cursor = nextCursor;
+  }
+
+  throw new Error(
+    `Refusing to spawn: the session list did not end within ${CEILING_MAX_PAGES} pages of ` +
+    `${CEILING_PAGE_SIZE}, so the spawn ceiling cannot be counted completely and a new session ` +
+    "could exceed it unnoticed. Delete or archive old sessions, then try again.",
+  );
+}
+
 export async function spawnSession(
   deps: ToolDeps,
   args: {
@@ -90,14 +136,10 @@ export async function spawnSession(
     );
   }
 
-  const existing = await deps.api.listSessions();
-  const mine = existing.filter((s) =>
-    s.environment_id === bridge.environmentId &&
-    s.status === "active" &&
-    (s.tags ?? []).includes(SERVER_TAG));
-  if (mine.length >= deps.maxSpawned) {
+  const mine = await countOwnActiveSessions(deps, bridge.environmentId);
+  if (mine >= deps.maxSpawned) {
     throw new Error(
-      `Spawn ceiling reached: ${mine.length} of ${deps.maxSpawned} sessions in "${bridge.name}" ` +
+      `Spawn ceiling reached: ${mine} of ${deps.maxSpawned} sessions in "${bridge.name}" ` +
       "were created by this server. Delete or archive one first.",
     );
   }
@@ -112,7 +154,28 @@ export async function spawnSession(
     permissionMode: mode,
   });
 
-  await deps.api.postUserMessage(created.id, args.prompt);
+  // createSession has already started the worker and taken both a bridge slot
+  // and a ceiling slot. If the prompt cannot be posted the caller never learns
+  // the id, so nothing else could ever clean the session up.
+  try {
+    await deps.api.postUserMessage(created.id, args.prompt);
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    let cleanup: string;
+    try {
+      await deps.api.deleteSession(created.id);
+      cleanup = "The session has been deleted.";
+    } catch (deleteError) {
+      const deleteReason = deleteError instanceof Error ? deleteError.message : String(deleteError);
+      cleanup = `Deleting it also failed (${deleteReason}) — it is still running and must be removed by hand.`;
+    }
+    throw new Error(
+      `Session ${created.id} was created in "${bridge.name}" but its first prompt could not be ` +
+      `posted (${reason}). ${cleanup}`,
+      { cause: error },
+    );
+  }
+
   return { session_id: created.id, instance: bridge.name, title };
 }
 
