@@ -1,0 +1,140 @@
+import { createServer } from "node:http";
+import { join } from "node:path";
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
+import { z } from "zod";
+import { SessionsApi } from "./api.js";
+import { createTokenReader } from "./credentials.js";
+import { defaultDiscoveryDeps } from "./discovery.js";
+import {
+  ALLOWED_PERMISSION_MODES, archiveSession, deleteSession, listInstances, listSessions,
+  readSession, sendMessage, spawnSession, unarchiveSession, waitForIdle, type ToolDeps,
+} from "./tools.js";
+
+export interface ServerConfig {
+  port: number;
+  host: string;
+  credentialsPath: string;
+  claudeConfigDir: string;
+  maxSpawned: number;
+}
+
+export function loadConfig(env: NodeJS.ProcessEnv): ServerConfig {
+  const home = env.HOME ?? "";
+  const host = env.HOST ?? "127.0.0.1";
+  if (host !== "127.0.0.1" && host !== "localhost" && host !== "::1") {
+    throw new Error(
+      `Refusing to bind ${host}: this server spawns agents and is meant for the loopback interface only.`,
+    );
+  }
+  const claudeConfigDir = env.CLAUDE_CONFIG_DIR ?? join(home, ".claude");
+  return {
+    host,
+    port: Number(env.PORT ?? 8765),
+    credentialsPath: env.CLAUDE_CREDENTIALS_PATH ?? join(claudeConfigDir, ".credentials.json"),
+    claudeConfigDir,
+    maxSpawned: Number(env.CLAUDE_SESSIONS_MCP_MAX_SPAWNED ?? 3),
+  };
+}
+
+const asJson = (value: unknown) => ({
+  content: [{ type: "text" as const, text: JSON.stringify(value, null, 2) }],
+});
+
+export function buildServer(deps: ToolDeps): McpServer {
+  const server = new McpServer({ name: "claude-sessions-mcp", version: "0.1.0" });
+
+  server.registerTool("list_instances", {
+    description: "Remote Control bridges running on this machine, with their environment ids and how many workers each has in use.",
+    inputSchema: {},
+  }, async () => asJson(await listInstances(deps)));
+
+  server.registerTool("list_sessions", {
+    description: "Sessions of one bridge, or of every bridge when no instance is named.",
+    inputSchema: { instance: z.string().optional() },
+  }, async (args) => asJson(await listSessions(deps, args)));
+
+  server.registerTool("spawn_session", {
+    description:
+      "Start a new Claude Code session inside a running bridge and give it a first prompt. " +
+      "The session belongs to that bridge: its worker runs under the bridge process and it " +
+      "appears in the session list like any other. Effort defaults to medium; " +
+      `permission_mode is one of ${ALLOWED_PERMISSION_MODES.join(", ")} (bypassPermissions is refused).`,
+    inputSchema: {
+      instance: z.string(),
+      prompt: z.string(),
+      title: z.string().optional(),
+      effort: z.enum(["low", "medium", "high", "xhigh", "max"]).optional(),
+      permission_mode: z.string().optional(),
+      caller: z.string().optional().describe("Who is asking, recorded on the session as spawned-by"),
+    },
+  }, async (args) => asJson(await spawnSession(deps, args)));
+
+  server.registerTool("send_message", {
+    description: "Send a message to a live session, as if typed by its user.",
+    inputSchema: { session_id: z.string(), text: z.string() },
+  }, async (args) => asJson(await sendMessage(deps, args)));
+
+  server.registerTool("read_session", {
+    description: "Recent events of a session, condensed to the conversation. Pass verbose for the machinery, cursor to continue.",
+    inputSchema: {
+      session_id: z.string(),
+      limit: z.number().int().positive().max(200).optional(),
+      cursor: z.string().optional(),
+      verbose: z.boolean().optional(),
+    },
+  }, async (args) => asJson(await readSession(deps, args)));
+
+  server.registerTool("wait_for_idle", {
+    description: "Wait on the session's event stream until its current turn finishes, then return the answer, stop reason, permission denials and cost.",
+    inputSchema: { session_id: z.string(), timeout_s: z.number().int().positive().max(3600).optional() },
+  }, async (args) => asJson(await waitForIdle(deps, args)));
+
+  server.registerTool("archive_session", {
+    description: "Stop a session and free its slot on the bridge, keeping its history.",
+    inputSchema: { session_id: z.string() },
+  }, async (args) => asJson(await archiveSession(deps, args)));
+
+  server.registerTool("unarchive_session", {
+    description: "Return an archived session to active. This does NOT restart its worker — a client has to open the session for it to run again.",
+    inputSchema: { session_id: z.string() },
+  }, async (args) => asJson(await unarchiveSession(deps, args)));
+
+  server.registerTool("delete_session", {
+    description: "Delete a session and stop its worker.",
+    inputSchema: { session_id: z.string() },
+  }, async (args) => asJson(await deleteSession(deps, args)));
+
+  return server;
+}
+
+async function main(): Promise<void> {
+  const config = loadConfig(process.env);
+  const token = createTokenReader(config.credentialsPath);
+  const deps: ToolDeps = {
+    api: new SessionsApi({ token }),
+    discovery: defaultDiscoveryDeps(config.claudeConfigDir),
+    maxSpawned: config.maxSpawned,
+  };
+
+  const server = buildServer(deps);
+  const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
+  await server.connect(transport);
+
+  createServer((req, res) => {
+    if (!req.url?.startsWith("/mcp")) {
+      res.writeHead(404).end();
+      return;
+    }
+    void transport.handleRequest(req, res);
+  }).listen(config.port, config.host, () => {
+    console.log(`claude-sessions-mcp listening on http://${config.host}:${config.port}/mcp`);
+  });
+}
+
+if (process.argv[1]?.endsWith("server.js")) {
+  main().catch((error: unknown) => {
+    console.error(error);
+    process.exit(1);
+  });
+}

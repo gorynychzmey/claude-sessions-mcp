@@ -1,0 +1,17 @@
+[Unit]
+Description=claude-sessions-mcp
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/claude-sessions-mcp
+ExecStart=/usr/bin/node %h/claude-sessions-mcp/dist/server.js
+Environment=PORT=8765
+# Raise if one caller legitimately needs more helpers at once.
+Environment=CLAUDE_SESSIONS_MCP_MAX_SPAWNED=3
+Restart=on-failure
+RestartSec=5s
+
+[Install]
+WantedBy=default.target
