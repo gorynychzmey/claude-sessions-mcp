@@ -171,8 +171,13 @@ export async function waitForIdle(
         if (error instanceof ApiError && error.status !== 429 && error.status >= 400 && error.status < 500) {
           throw error;
         }
-        await sleep(RECONNECT_DELAY_MS);
       }
+      if (controller.signal.aborted) break;
+      // Every reconnect waits, not only the ones that follow an error: a
+      // stream that ends cleanly and immediately (an idle connection the
+      // server closed, a bridge restart, an empty stream) would otherwise
+      // be reopened thousands of times inside one timeout.
+      await sleep(RECONNECT_DELAY_MS);
     }
     return {
       finished: false,

@@ -50,10 +50,38 @@ describe("wait_for_idle", () => {
       [resultEvent],
     ]);
 
-    const outcome = await waitForIdle(toolDeps, { session_id: "s-1", timeout_s: 5 });
+    vi.useFakeTimers();
+    const pending = waitForIdle(toolDeps, { session_id: "s-1", timeout_s: 5 });
+    await vi.advanceTimersByTimeAsync(1000);
+    const outcome = await pending;
 
     expect(outcome.finished).toBe(true);
     expect(streamEvents.mock.calls[1][1]).toMatchObject({ lastEventId: "5" });
+  });
+
+  it("waits before every reconnect, including after a stream that ended cleanly", async () => {
+    // Two consecutive empty streams: nothing throws, so the old code reopened
+    // the stream with no pause at all and spun the reconnect loop.
+    const { toolDeps, streamEvents } = depsWithStream([[], []]);
+
+    vi.useFakeTimers();
+    const pending = waitForIdle(toolDeps, { session_id: "s-1", timeout_s: 10 });
+
+    await vi.advanceTimersByTimeAsync(0);
+    expect(streamEvents).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(streamEvents).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(streamEvents).toHaveBeenCalledTimes(3);
+
+    await vi.advanceTimersByTimeAsync(10_000);
+    const outcome = await pending;
+
+    expect(outcome.finished).toBe(false);
+    // One attempt per second of the ten-second budget, give or take the
+    // boundary — not the thousands an unthrottled loop would make.
+    expect(streamEvents.mock.calls.length).toBeLessThanOrEqual(12);
+    expect(streamEvents.mock.calls.length).toBeGreaterThanOrEqual(10);
   });
 
   it("says the session is still working when the timeout expires", async () => {
