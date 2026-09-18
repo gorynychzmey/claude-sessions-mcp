@@ -1,4 +1,4 @@
-import { createServer } from "node:http";
+import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { join } from "node:path";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
@@ -108,6 +108,89 @@ export function buildServer(deps: ToolDeps): McpServer {
   return server;
 }
 
+/**
+ * Host header values accepted when DNS-rebinding protection is on. The endpoint
+ * is loopback-only by design, so the list is the loopback names with and
+ * without the port rather than anything configurable.
+ */
+export function loopbackAllowedHosts(port: number): string[] {
+  const names = ["127.0.0.1", "localhost", "[::1]", "::1"];
+  return names.flatMap((name) => [name, `${name}:${port}`]);
+}
+
+const INTERNAL_ERROR_BODY = JSON.stringify({
+  jsonrpc: "2.0",
+  error: { code: -32603, message: "Internal server error" },
+  id: null,
+});
+
+/**
+ * One MCP server and one transport per POST. The SDK's stateless transport
+ * refuses to be reused across requests, and this server keeps no state between
+ * calls anyway, so the per-request pair is both what the SDK documents and what
+ * the design asks for.
+ */
+export function createRequestHandler(
+  deps: ToolDeps,
+  options: { allowedHosts: string[] },
+): (req: IncomingMessage, res: ServerResponse) => void {
+  return (req, res) => {
+    void handleRequest(deps, options, req, res);
+  };
+}
+
+async function handleRequest(
+  deps: ToolDeps,
+  options: { allowedHosts: string[] },
+  req: IncomingMessage,
+  res: ServerResponse,
+): Promise<void> {
+  if (!req.url?.startsWith("/mcp")) {
+    res.writeHead(404).end();
+    return;
+  }
+  if (req.method !== "POST") {
+    // Stateless: there is no session to attach a server-initiated stream to,
+    // and nothing to DELETE.
+    res.writeHead(405, { allow: "POST", "content-type": "application/json" })
+      .end(JSON.stringify({
+        jsonrpc: "2.0",
+        error: { code: -32000, message: "Method not allowed: this endpoint is stateless and serves POST only." },
+        id: null,
+      }));
+    return;
+  }
+
+  const server = buildServer(deps);
+  const transport = new StreamableHTTPServerTransport({
+    sessionIdGenerator: undefined,
+    enableDnsRebindingProtection: true,
+    allowedHosts: options.allowedHosts,
+  });
+  const closeBoth = async () => {
+    await transport.close().catch(() => undefined);
+    await server.close().catch(() => undefined);
+  };
+  res.on("close", () => {
+    void closeBoth();
+  });
+
+  try {
+    await server.connect(transport);
+    await transport.handleRequest(req, res);
+  } catch (error) {
+    // The rejection used to be discarded with `void`, which is how a transport
+    // that refused the request failed silently.
+    console.error("claude-sessions-mcp: request failed", error);
+    if (!res.headersSent) {
+      res.writeHead(500, { "content-type": "application/json" }).end(INTERNAL_ERROR_BODY);
+    } else {
+      res.end();
+    }
+    await closeBoth();
+  }
+}
+
 async function main(): Promise<void> {
   const config = loadConfig(process.env);
   const token = createTokenReader(config.credentialsPath);
@@ -117,17 +200,8 @@ async function main(): Promise<void> {
     maxSpawned: config.maxSpawned,
   };
 
-  const server = buildServer(deps);
-  const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
-  await server.connect(transport);
-
-  createServer((req, res) => {
-    if (!req.url?.startsWith("/mcp")) {
-      res.writeHead(404).end();
-      return;
-    }
-    void transport.handleRequest(req, res);
-  }).listen(config.port, config.host, () => {
+  const handler = createRequestHandler(deps, { allowedHosts: loopbackAllowedHosts(config.port) });
+  createServer(handler).listen(config.port, config.host, () => {
     console.log(`claude-sessions-mcp listening on http://${config.host}:${config.port}/mcp`);
   });
 }
