@@ -9,7 +9,7 @@ WorkingDirectory=%h/claude-sessions-mcp
 ExecStart=/usr/bin/node %h/claude-sessions-mcp/dist/server.js
 Environment=PORT=8765
 # Raise if one caller legitimately needs more helpers at once.
-Environment=CLAUDE_SESSIONS_MCP_MAX_SPAWNED=3
+Environment=CLAUDE_SESSIONS_MCP_MAX_SPAWNED=6
 Restart=on-failure
 RestartSec=5s
 

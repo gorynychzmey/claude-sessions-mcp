@@ -4,6 +4,9 @@
   "private": true,
   "license": "MIT",
   "type": "module",
+  "bin": {
+    "claude-sessions": "dist/cli.js"
+  },
   "engines": {
     "node": ">=22"
   },

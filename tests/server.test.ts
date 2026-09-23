@@ -2,9 +2,9 @@ import { describe, expect, it } from "vitest";
 import { loadConfig } from "../src/server.js";
 
 describe("loadConfig", () => {
-  it("defaults to the loopback interface and a spawn ceiling of three", () => {
+  it("defaults to the loopback interface and a spawn ceiling of six", () => {
     const config = loadConfig({ HOME: "/home/example" } as NodeJS.ProcessEnv);
-    expect(config).toMatchObject({ host: "127.0.0.1", port: 8765, maxSpawned: 3 });
+    expect(config).toMatchObject({ host: "127.0.0.1", port: 8765, maxSpawned: 6 });
     expect(config.credentialsPath).toBe("/home/example/.claude/.credentials.json");
     expect(config.claudeConfigDir).toBe("/home/example/.claude");
   });

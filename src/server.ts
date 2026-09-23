@@ -34,7 +34,7 @@ export function loadConfig(env: NodeJS.ProcessEnv): ServerConfig {
     port: Number(env.PORT ?? 8765),
     credentialsPath: env.CLAUDE_CREDENTIALS_PATH ?? join(claudeConfigDir, ".credentials.json"),
     claudeConfigDir,
-    maxSpawned: Number(env.CLAUDE_SESSIONS_MCP_MAX_SPAWNED ?? 3),
+    maxSpawned: Number(env.CLAUDE_SESSIONS_MCP_MAX_SPAWNED ?? 6),
   };
 }
 
