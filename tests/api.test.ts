@@ -33,6 +33,25 @@ describe("SessionsApi", () => {
     });
   });
 
+  it("sends the model in config only when one is given", async () => {
+    const fetchImpl = vi.fn(async () => json({ session }));
+    const api = new SessionsApi({ token, fetchImpl: fetchImpl as unknown as typeof fetch });
+
+    await api.createSession({
+      environmentId: "env-1", title: "demo", tags: [], effort: "medium",
+      permissionMode: "auto", model: "claude-opus-5",
+    });
+    await api.createSession({
+      environmentId: "env-1", title: "demo", tags: [], effort: "medium", permissionMode: "auto",
+    });
+
+    const bodies = fetchImpl.mock.calls.map(([, init]) => JSON.parse((init as RequestInit).body as string));
+    expect(bodies[0].config).toEqual({
+      effort_level: "medium", permission_mode: "auto", origin: "cli", model: "claude-opus-5",
+    });
+    expect(bodies[1].config).not.toHaveProperty("model");
+  });
+
   it("posts a user message in the event_type envelope the API requires", async () => {
     const fetchImpl = vi.fn(async () => json({ results: [] }));
     const api = new SessionsApi({ token, fetchImpl: fetchImpl as unknown as typeof fetch });

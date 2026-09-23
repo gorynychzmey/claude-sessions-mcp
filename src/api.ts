@@ -36,6 +36,8 @@ export interface CreateSessionInput {
   tags: string[];
   effort: string;
   permissionMode: string;
+  /** Model for the session's worker; omitted → the bridge host's default. */
+  model?: string;
 }
 
 export interface SessionsApiOptions {
@@ -123,6 +125,7 @@ export class SessionsApi {
           effort_level: input.effort,
           permission_mode: input.permissionMode,
           origin: "cli",
+          ...(input.model ? { model: input.model } : {}),
         },
       }),
     }) as { session: RawSession };
