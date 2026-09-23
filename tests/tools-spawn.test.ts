@@ -171,6 +171,20 @@ describe("spawn_session", () => {
     await spawnSession(toolDeps, { instance: "alpha", prompt: "x".repeat(200) });
     expect(createSession.mock.calls[0][0].title).toHaveLength(60);
   });
+
+  it("adds caller-supplied tags after its own and passes the model through", async () => {
+    const { toolDeps, createSession } = deps();
+
+    await spawnSession(toolDeps, {
+      instance: "alpha", prompt: "p", caller: "vector-task",
+      tags: ["role:vector-prime"], model: "claude-opus-5",
+    });
+
+    expect(createSession).toHaveBeenCalledWith(expect.objectContaining({
+      tags: [SERVER_TAG, "spawned-by:vector-task", "role:vector-prime"],
+      model: "claude-opus-5",
+    }));
+  });
 });
 
 describe("send_message", () => {

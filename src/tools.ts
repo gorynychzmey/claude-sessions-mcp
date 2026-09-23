@@ -117,6 +117,8 @@ export async function spawnSession(
     effort?: string;
     permission_mode?: string;
     caller?: string;
+    tags?: string[];
+    model?: string;
   },
 ): Promise<{ session_id: string; instance: string; title: string }> {
   const mode = args.permission_mode ?? "auto";
@@ -149,9 +151,10 @@ export async function spawnSession(
   const created = await deps.api.createSession({
     environmentId: bridge.environmentId,
     title,
-    tags: [SERVER_TAG, `spawned-by:${caller}`],
+    tags: [SERVER_TAG, `spawned-by:${caller}`, ...(args.tags ?? [])],
     effort: args.effort ?? DEFAULT_EFFORT,
     permissionMode: mode,
+    ...(args.model ? { model: args.model } : {}),
   });
 
   // createSession has already started the worker and taken both a bridge slot
