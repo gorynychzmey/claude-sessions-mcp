@@ -12,6 +12,7 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
+    "postbuild": "chmod +x dist/cli.js",
     "test": "vitest run",
     "start": "node dist/server.js",
     "release": "node scripts/release.mjs"
