@@ -33,6 +33,19 @@ describe("claude-sessions CLI", () => {
     expect(o.err.join("")).toContain("No running bridge");
   });
 
+  it("reattach prints the report and fails only when the bridge is missing", async () => {
+    const o = io();
+    const reattach = vi.fn(async () => ({ instance: "vts", environmentId: "env-1", reattached: ["cse_1"], failed: [] }));
+    expect(await main(["reattach", "vts"], { reattach, ...o } as never)).toBe(0);
+    expect(reattach).toHaveBeenCalledWith("vts");
+    expect(JSON.parse(o.out.join("")).reattached).toEqual(["cse_1"]);
+
+    const o2 = io();
+    const missing = vi.fn(async () => { throw new Error('No running bridge named "vts"'); });
+    expect(await main(["reattach", "vts"], { reattach: missing, ...o2 } as never)).toBe(1);
+    expect(o2.err.join("")).toContain("No running bridge");
+  });
+
   it("rejects an unknown command", async () => {
     const o = io();
     expect(await main(["frobnicate"], { ...o } as never)).toBe(2);

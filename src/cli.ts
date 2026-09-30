@@ -6,16 +6,18 @@ import { SessionsApi } from "./api.js";
 import { createTokenReader } from "./credentials.js";
 import { defaultDiscoveryDeps } from "./discovery.js";
 import { parseTarget, runTask as runTaskImpl, type RunReport } from "./run.js";
+import { reattachSessions } from "./tools.js";
 import { loadConfig } from "./server.js";
 
 export interface CliDeps {
   api: Pick<SessionsApi, "getSession" | "archiveSession">;
   runTask(instance: string, task: string): Promise<RunReport>;
+  reattach(instance: string): Promise<unknown>;
   write(s: string): void;
   warn(s: string): void;
 }
 
-const USAGE = "usage: claude-sessions run <instance--task> | show <session-id> | archive <session-id>";
+const USAGE = "usage: claude-sessions run <instance--task> | show <session-id> | archive <session-id> | reattach <instance>";
 
 export async function main(argv: string[], deps: CliDeps): Promise<number> {
   const [command, ...rest] = argv;
@@ -38,6 +40,11 @@ export async function main(argv: string[], deps: CliDeps): Promise<number> {
         if (!rest[0]) throw new Error(USAGE);
         const s = await deps.api.getSession(rest[0]);
         deps.write(`${JSON.stringify({ id: s.id, title: s.title ?? "", status: s.status ?? "", tags: s.tags ?? [] })}\n`);
+        return 0;
+      }
+      case "reattach": {
+        if (!rest[0]) throw new Error(USAGE);
+        deps.write(`${JSON.stringify(await deps.reattach(rest[0]))}\n`);
         return 0;
       }
       case "archive": {
@@ -65,9 +72,27 @@ function productionDeps(): CliDeps {
   return {
     api,
     runTask: (instance, task) => runTaskImpl(toolDeps, instance, task),
+    reattach: (instance) => reattachWhenUp(toolDeps, instance),
     write: (s) => process.stdout.write(s),
     warn: (s) => process.stderr.write(s),
   };
+}
+
+/**
+ * Run from the bridge unit's ExecStartPost, which can fire before the new
+ * bridge has registered and rewritten its pointer: retry the lookup for a
+ * while instead of failing on the first miss.
+ */
+async function reattachWhenUp(toolDeps: Parameters<typeof reattachSessions>[0], instance: string) {
+  const deadline = Date.now() + 60_000;
+  for (;;) {
+    try {
+      return await reattachSessions(toolDeps, { instance });
+    } catch (error) {
+      if (Date.now() > deadline || !String(error).includes("No running bridge")) throw error;
+      await new Promise((r) => setTimeout(r, 2000));
+    }
+  }
 }
 
 // Run only when executed, not when imported by tests. realpath: the installed

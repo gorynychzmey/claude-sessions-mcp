@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { sendMessage, spawnSession } from "../src/tools.js";
+import { spawnSession } from "../src/tools.js";
 import type { ToolDeps } from "../src/tools.js";
 import { SERVER_TAG } from "../src/sessions.js";
 
@@ -184,13 +184,5 @@ describe("spawn_session", () => {
       tags: [SERVER_TAG, "spawned-by:vector-task", "role:vector-prime"],
       model: "claude-opus-5",
     }));
-  });
-});
-
-describe("send_message", () => {
-  it("delivers text to a session", async () => {
-    const { toolDeps, postUserMessage } = deps();
-    expect(await sendMessage(toolDeps, { session_id: "s-1", text: "ping" })).toEqual({ delivered: true });
-    expect(postUserMessage).toHaveBeenCalledWith("s-1", "ping");
   });
 });

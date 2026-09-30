@@ -182,12 +182,52 @@ export async function spawnSession(
   return { session_id: created.id, instance: bridge.name, title };
 }
 
+/** A session that is live but has no worker on any bridge right now. */
+function detached(s: { status?: string; connection_status?: string }): boolean {
+  return s.status !== "archived" && s.connection_status !== "connected";
+}
+
 export async function sendMessage(
   deps: ToolDeps,
   args: { session_id: string; text: string },
-): Promise<{ delivered: true }> {
+): Promise<{ delivered: true; reattached: boolean }> {
   await deps.api.postUserMessage(args.session_id, args.text);
-  return { delivered: true };
+  // A message alone never gets a detached session a worker (measured: 11 min
+  // of nothing), so wake it the way the bridge wakes its own anchor.
+  const session = await deps.api.getSession(args.session_id);
+  if (!detached(session) || !session.environment_id) return { delivered: true, reattached: false };
+  await deps.api.reconnectSession(session.environment_id, args.session_id);
+  return { delivered: true, reattached: true };
+}
+
+/**
+ * After a bridge restart, hand it back every live session of its environment
+ * that has no worker. Without this they stay unreachable for ~6 minutes (the
+ * old bridge's work leases) and then until a client re-opens them.
+ */
+export async function reattachSessions(
+  deps: ToolDeps,
+  args: { instance: string },
+): Promise<{
+  instance: string;
+  environmentId: string;
+  reattached: string[];
+  failed: { session_id: string; error: string }[];
+}> {
+  const bridge = await requireInstance(deps, args.instance);
+  const sessions = (await deps.api.listSessions())
+    .filter((s) => s.environment_id === bridge.environmentId && detached(s));
+  const reattached: string[] = [];
+  const failed: { session_id: string; error: string }[] = [];
+  for (const s of sessions) {
+    try {
+      await deps.api.reconnectSession(bridge.environmentId, s.id);
+      reattached.push(s.id);
+    } catch (error) {
+      failed.push({ session_id: s.id, error: error instanceof Error ? error.message : String(error) });
+    }
+  }
+  return { instance: args.instance, environmentId: bridge.environmentId, reattached, failed };
 }
 
 /**

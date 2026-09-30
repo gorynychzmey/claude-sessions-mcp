@@ -65,6 +65,20 @@ describe("SessionsApi", () => {
     });
   });
 
+  it("reconnects a session to its bridge on the environments API with its beta", async () => {
+    const fetchImpl = vi.fn(async () => json({ environment_id: "env-1" }));
+    const api = new SessionsApi({ token, fetchImpl: fetchImpl as unknown as typeof fetch });
+
+    await api.reconnectSession("env-1", "cse_1");
+
+    const [url, init] = fetchImpl.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe("https://api.anthropic.com/v1/environments/env-1/bridge/reconnect");
+    expect(init.method).toBe("POST");
+    expect((init.headers as Record<string, string>)["anthropic-beta"])
+      .toBe("oauth-2025-04-20,environments-2025-11-01");
+    expect(JSON.parse(init.body as string)).toEqual({ session_id: "cse_1" });
+  });
+
   it("unwraps the response_shape envelope that only GET of one session uses", async () => {
     const fetchImpl = vi.fn(async () => json({ response_shape: session }));
     const api = new SessionsApi({ token, fetchImpl: fetchImpl as unknown as typeof fetch });

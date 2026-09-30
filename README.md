@@ -75,6 +75,30 @@ archiving a session cuts its turn short without emitting anything on the
 stream. Both end with the call: nothing is subscribed or watched between
 calls.
 
+### After a bridge restart
+
+A stopped bridge does not release the work leases of its sessions. When it
+comes back, it re-queues only the one session its pointer file names; every
+other session stays without a worker until the old lease expires (about six
+minutes, measured on CLI 2.1.284) **and** a client re-opens it. A user message
+alone never gets it a worker. In the claude.ai client this looks like
+"Remote Control disconnected" for a bridge that is in fact up.
+
+`claude-sessions reattach <instance>` hands the bridge back every live session
+of its environment that has no worker, through the same
+`/v1/environments/<env>/bridge/reconnect` call the bridge makes for its own
+anchor, which does not wait for the lease. It waits up to a minute for the
+bridge to show up, so it can run as an `ExecStartPost=` of the unit that runs
+the bridge:
+
+```ini
+ExecStartPost=-/path/to/claude-sessions reattach %i
+```
+
+It prints a JSON report (`reattached`, `failed`) and exits non-zero only when
+the bridge never appeared. `send_message` does the same for the one session it
+writes to, when that session has no worker (`reattached: true` in its result).
+
 ### Safety rails
 
 - `permission_mode` accepts `auto`, `acceptEdits`, `plan`, `manual` or

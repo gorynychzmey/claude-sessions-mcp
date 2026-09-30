@@ -62,10 +62,10 @@ export class SessionsApi {
     this.retryDelayMs = options.retryDelayMs ?? 500;
   }
 
-  async headers(): Promise<Record<string, string>> {
+  async headers(extraBeta?: string): Promise<Record<string, string>> {
     return {
       authorization: `Bearer ${await this.token.read()}`,
-      "anthropic-beta": "oauth-2025-04-20",
+      "anthropic-beta": extraBeta ? `oauth-2025-04-20,${extraBeta}` : "oauth-2025-04-20",
       "anthropic-version": "2023-06-01",
       "content-type": "application/json",
     };
@@ -75,12 +75,16 @@ export class SessionsApi {
     return `${this.baseUrl}/v1/code/sessions${path}`;
   }
 
-  private async request(path: string, init: RequestInit = {}): Promise<unknown> {
+  private async request(
+    path: string,
+    init: RequestInit = {},
+    target: { url?: string; beta?: string } = {},
+  ): Promise<unknown> {
     let refreshed = false;
     for (let attempt = 1; ; attempt++) {
-      const response = await this.fetchImpl(this.url(path), {
+      const response = await this.fetchImpl(target.url ?? this.url(path), {
         ...init,
-        headers: await this.headers(),
+        headers: await this.headers(target.beta),
         signal: AbortSignal.timeout(30_000),
       });
 
@@ -182,6 +186,21 @@ export class SessionsApi {
     const body = await this.request(`/${sessionId}/events?${query}`) as
       { data?: RawEvent[]; resume_cursor?: string };
     return { events: body.data ?? [], resumeCursor: body.resume_cursor ?? null };
+  }
+
+  /**
+   * Re-queue a session for its bridge, the call the bridge itself makes at
+   * startup for the one session its pointer names. A stopped bridge does not
+   * release its sessions' work leases, so every other session stays
+   * unassigned until the lease expires (~6 min) AND a client re-initializes
+   * it; a user message alone never gets it a worker. This call skips both.
+   */
+  async reconnectSession(environmentId: string, sessionId: string): Promise<void> {
+    const path = `/v1/environments/${environmentId}/bridge/reconnect`;
+    await this.request(path, {
+      method: "POST",
+      body: JSON.stringify({ session_id: sessionId }),
+    }, { url: `${this.baseUrl}${path}`, beta: "environments-2025-11-01" });
   }
 
   async archiveSession(sessionId: string): Promise<RawSession> {
