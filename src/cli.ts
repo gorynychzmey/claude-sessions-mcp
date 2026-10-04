@@ -1,11 +1,14 @@
 #!/usr/bin/env node
-import { readFile } from "node:fs/promises";
+import { spawn } from "node:child_process";
+import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { realpathSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { SessionsApi } from "./api.js";
 import { createTokenReader } from "./credentials.js";
 import { defaultDiscoveryDeps } from "./discovery.js";
-import { parseTarget, runTask as runTaskImpl, type RunReport } from "./run.js";
+import { parseTarget, runTask as runTaskImpl, type GateState, type RunReport } from "./run.js";
 import { reattachSessions } from "./tools.js";
 import { loadConfig } from "./server.js";
 
@@ -68,6 +71,22 @@ function productionDeps(): CliDeps {
   const toolDeps = {
     api, discovery: defaultDiscoveryDeps(config.claudeConfigDir), maxSpawned: config.maxSpawned,
     readFile: (p: string) => readFile(p, "utf8"),
+    exec: execPrecheck,
+    readState: async (key: string): Promise<GateState | null> => {
+      try {
+        return JSON.parse(await readFile(join(gateStateDir(), `${key}.json`), "utf8")) as GateState;
+      } catch {
+        return null;
+      }
+    },
+    writeState: async (key: string, value: GateState) => {
+      const dir = gateStateDir();
+      await mkdir(dir, { recursive: true });
+      const tmp = join(dir, `.${key}.json.tmp`);
+      await writeFile(tmp, `${JSON.stringify(value)}\n`);
+      await rename(tmp, join(dir, `${key}.json`));
+    },
+    now: () => Date.now(),
   };
   return {
     api,
@@ -76,6 +95,27 @@ function productionDeps(): CliDeps {
     write: (s) => process.stdout.write(s),
     warn: (s) => process.stderr.write(s),
   };
+}
+
+function gateStateDir(): string {
+  return join(process.env.XDG_STATE_HOME || join(homedir(), ".local", "state"), "vector-task");
+}
+
+/**
+ * Run a task's precheck under bash in the project directory, with WORKDIR set
+ * as the task prompts expect. Its stderr goes to ours, i.e. the unit's journal.
+ */
+function execPrecheck(command: string, cwd: string, timeoutMs: number): Promise<{ code: number; stdout: string }> {
+  return new Promise((resolve, reject) => {
+    const child = spawn("bash", ["-c", command], {
+      cwd, env: { ...process.env, WORKDIR: cwd }, stdio: ["ignore", "pipe", "inherit"], timeout: timeoutMs,
+    });
+    let stdout = "";
+    child.stdout.setEncoding("utf8").on("data", (chunk: string) => { stdout += chunk; });
+    child.on("error", reject);
+    // A timeout kills the child: code is null, which the gate treats as failed.
+    child.on("close", (code) => resolve({ code: code ?? -1, stdout }));
+  });
 }
 
 /**

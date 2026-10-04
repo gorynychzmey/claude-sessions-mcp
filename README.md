@@ -99,6 +99,33 @@ It prints a JSON report (`reattached`, `failed`) and exits non-zero only when
 the bridge never appeared. `send_message` does the same for the one session it
 writes to, when that session has no worker (`reattached: true` in its result).
 
+### Scheduled task runs
+
+`claude-sessions run <instance>--<task>` runs one task from the project's
+`.claude/background/tasks.json`: it spawns a session tagged
+`role:vector-prime` on that bridge, waits for its turn to end (`timeout_min`,
+default 60), archives it, prints a JSON report and exits non-zero on failure.
+`model` picks the session's model; without it the bridge's default applies.
+
+A task can declare a `precheck`, a shell command run in the project directory
+(with `WORKDIR` set) before anything is spawned. Its stdout lists the work
+there is. The run is skipped (`outcome: "skipped"`, exit 0) when that output is
+empty, or identical to what it was at the last successful run; state lives in
+`$XDG_STATE_HOME/vector-task/<instance>--<task>.json`, written only after a
+successful run, so failed work is retried on the next firing. A precheck that
+exits non-zero, or runs over 60 s, lets the task run as if it had none.
+`precheck_max_skip_h` forces a run when that many hours passed since the last
+real one, as a guard against a precheck that wrongly reports no work.
+
+```json
+"zabbix-watch": {
+  "cron": "*/30 * * * *", "prompt_file": "zabbix-watch.md",
+  "model": "claude-haiku-4-5",
+  "precheck": "$HOME/dev/.config/claude-background/prechecks/zabbix-watch.sh",
+  "precheck_max_skip_h": 24
+}
+```
+
 ### Safety rails
 
 - `permission_mode` accepts `auto`, `acceptEdits`, `plan`, `manual` or
