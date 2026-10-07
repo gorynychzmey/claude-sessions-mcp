@@ -126,11 +126,6 @@ real one, as a guard against a precheck that wrongly reports no work.
 }
 ```
 
-`permission_mode` (default `auto`) sets the spawned session's mode. Use
-`dontAsk` for a task whose allowlist is complete: a call outside it is refused
-at once and the model tries something else, instead of the session waiting on a
-prompt nobody answers until `timeout_min` kills the run.
-
 ### Safety rails
 
 - `permission_mode` accepts `auto`, `acceptEdits`, `plan`, `manual` or

@@ -9,7 +9,6 @@ const bridge = {
 const tasksJson = JSON.stringify({ tasks: {
   "ci-monitor": { cron: "17 */3 * * *", prompt_file: "ci-monitor.md" },
   "nightly": { cron: "0 3 * * *", prompt_file: "nightly.md", timeout_min: 5, model: "claude-opus-5" },
-  "strict": { cron: "*/30 * * * *", prompt_file: "s.md", permission_mode: "dontAsk" },
   "watch": { cron: "*/30 * * * *", prompt_file: "watch.md", precheck: "list-work" },
   "guarded": { cron: "*/30 * * * *", prompt_file: "g.md", precheck: "list-work", precheck_max_skip_h: 24 },
 } });
@@ -87,12 +86,6 @@ describe("runTask", () => {
     }));
     expect(postUserMessage.mock.calls[0][1]).toContain("/srv/alpha/.claude/background/ci-monitor.md");
     expect(archiveSession).toHaveBeenCalledWith("s-1");
-  });
-
-  it("passes the task's permission_mode through", async () => {
-    const { deps, createSession } = makeDeps({ frames: [resultFrame(false)] });
-    await runTask(deps, "alpha", "strict");
-    expect(createSession).toHaveBeenCalledWith(expect.objectContaining({ permissionMode: "dontAsk" }));
   });
 
   it("passes the task's model through", async () => {

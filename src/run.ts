@@ -14,13 +14,6 @@ export interface TaskSpec {
   timeout_min?: number;
   model?: string;
   /**
-   * Permission mode of the spawned session (default "auto"). "dontAsk" turns a
-   * tool call outside the project's allowlist into an immediate refusal instead
-   * of a prompt nobody can answer in an unattended run, which would hold the
-   * session until timeout_min. Validated by spawnSession.
-   */
-  permission_mode?: string;
-  /**
    * Shell command run in the project directory before spawning. Its stdout
    * lists the work there is; the run is skipped when that is empty or the same
    * as at the last successful run. A non-zero exit runs the task anyway.
@@ -115,7 +108,7 @@ export async function runTask(deps: RunDeps, instance: string, task: string): Pr
     prompt: `Background task ${task} firing. Read \`${promptPath}\` and follow it exactly. ` +
       "Be terse. End your turn cleanly.",
     caller: "vector-task",
-    permission_mode: spec.permission_mode ?? "auto",
+    permission_mode: "auto",
     tags: [VECTOR_TAG],
     model: spec.model,
   });
