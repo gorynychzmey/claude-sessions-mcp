@@ -2,11 +2,14 @@ import { ApiError, type SessionsApi } from "./api.js";
 import { discoverInstances, type DiscoveryDeps } from "./discovery.js";
 import { SERVER_TAG, condenseEvents, toSummary, toTurnResult } from "./sessions.js";
 import type { BridgeInstance, TurnResult } from "./types.js";
+import type { SpawnRegistry } from "./registry.js";
 
 export interface ToolDeps {
   api: SessionsApi;
   discovery: DiscoveryDeps;
   maxSpawned: number;
+  /** The sessions this server spawned; the spawn ceiling is counted from it. */
+  registry: SpawnRegistry;
   /** Seam for tests; production passes discoverInstances over `discovery`. */
   discover?: (deps: DiscoveryDeps) => Promise<BridgeInstance[]>;
 }
@@ -72,40 +75,81 @@ export const ALLOWED_PERMISSION_MODES = [
 const DEFAULT_EFFORT = "medium";
 const TITLE_LIMIT = 60;
 
-/** Page size and page cap for the ceiling count. */
-const CEILING_PAGE_SIZE = 100;
-const CEILING_MAX_PAGES = 20;
+/**
+ * Page size and page cap for the one-time scan that seeds the registry. The cap
+ * only stops a list that never ends; it is far above any real history.
+ */
+const SEED_PAGE_SIZE = 100;
+const SEED_MAX_PAGES = 1000;
 
 /**
- * Counts this server's own live sessions in one environment, across every page
- * of the session list. A single page would be an under-count: the list holds
- * archived sessions too and ignores query filters, so with a long history this
- * server's own sessions fall off the first page and the ceiling stops binding.
- * If the list does not end within the page cap the count is incomplete, and an
- * incomplete count fails closed rather than spawning.
+ * Fills an unseeded registry with this server's live sessions from the full
+ * session list. Runs once, on the first spawn after the registry appears; a
+ * list that does not end within the cap leaves it unseeded and fails closed.
  */
-async function countOwnActiveSessions(deps: ToolDeps, environmentId: string): Promise<number> {
+async function seedRegistry(deps: ToolDeps): Promise<void> {
   let cursor: string | undefined;
-  let count = 0;
-
-  for (let page = 0; page < CEILING_MAX_PAGES; page++) {
-    const { sessions, nextCursor } = await deps.api.listSessionsPage({
-      limit: CEILING_PAGE_SIZE,
-      cursor,
-    });
-    count += sessions.filter((s) =>
-      s.environment_id === environmentId &&
-      s.status === "active" &&
-      (s.tags ?? []).includes(SERVER_TAG)).length;
-    if (!nextCursor) return count;
+  for (let page = 0; page < SEED_MAX_PAGES; page++) {
+    const { sessions, nextCursor } = await deps.api.listSessionsPage({ limit: SEED_PAGE_SIZE, cursor });
+    for (const s of sessions) {
+      if (s.status === "active" && (s.tags ?? []).includes(SERVER_TAG)) await deps.registry.add(s.id);
+    }
+    if (!nextCursor) {
+      await deps.registry.markSeeded();
+      return;
+    }
     cursor = nextCursor;
   }
-
   throw new Error(
-    `Refusing to spawn: the session list did not end within ${CEILING_MAX_PAGES} pages of ` +
-    `${CEILING_PAGE_SIZE}, so the spawn ceiling cannot be counted completely and a new session ` +
-    "could exceed it unnoticed. Delete or archive old sessions, then try again.",
+    `Refusing to spawn: the session list did not end within ${SEED_MAX_PAGES} pages of ` +
+    `${SEED_PAGE_SIZE}, so the registry of this server's sessions cannot be seeded and the ` +
+    "spawn ceiling cannot be counted.",
   );
+}
+
+/**
+ * Counts this server's own live sessions in one environment by asking about
+ * each session in its registry, not by paging the session list: that list
+ * holds every archived session too and outgrows any page cap (it passed 2000
+ * entries in November 2026 and the old 20-page count started refusing every
+ * spawn). Archived and deleted sessions are dropped from the registry as they
+ * are found. Any other lookup error propagates, so a count that cannot be
+ * completed fails closed rather than spawning.
+ */
+async function countOwnActiveSessions(deps: ToolDeps, environmentId: string): Promise<number> {
+  if (!(await deps.registry.isSeeded())) await seedRegistry(deps);
+
+  let count = 0;
+  for (const id of await deps.registry.list()) {
+    let session;
+    try {
+      session = await deps.api.getSession(id);
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 404) {
+        await deps.registry.remove(id);
+        continue;
+      }
+      throw error;
+    }
+    if (session.status !== "active") {
+      await deps.registry.remove(id);
+      continue;
+    }
+    if (session.environment_id === environmentId) count++;
+  }
+  return count;
+}
+
+/** Deletes a session that was created but cannot be handed back; says how that went. */
+async function discardCreated(deps: ToolDeps, sessionId: string): Promise<string> {
+  try {
+    await deps.api.deleteSession(sessionId);
+  } catch (deleteError) {
+    const deleteReason = deleteError instanceof Error ? deleteError.message : String(deleteError);
+    return `Deleting it also failed (${deleteReason}) — it is still running and must be removed by hand.`;
+  }
+  await deps.registry.remove(sessionId).catch(() => {});
+  return "The session has been deleted.";
 }
 
 export async function spawnSession(
@@ -158,20 +202,26 @@ export async function spawnSession(
   });
 
   // createSession has already started the worker and taken both a bridge slot
-  // and a ceiling slot. If the prompt cannot be posted the caller never learns
-  // the id, so nothing else could ever clean the session up.
+  // and a ceiling slot. A session missing from the registry would never count
+  // towards the ceiling, and one whose prompt cannot be posted is never handed
+  // back to the caller; either way nothing else could clean it up.
+  try {
+    await deps.registry.add(created.id);
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    const cleanup = await discardCreated(deps, created.id);
+    throw new Error(
+      `Session ${created.id} was created in "${bridge.name}" but could not be recorded in the ` +
+      `spawn registry (${reason}). ${cleanup}`,
+      { cause: error },
+    );
+  }
+
   try {
     await deps.api.postUserMessage(created.id, args.prompt);
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error);
-    let cleanup: string;
-    try {
-      await deps.api.deleteSession(created.id);
-      cleanup = "The session has been deleted.";
-    } catch (deleteError) {
-      const deleteReason = deleteError instanceof Error ? deleteError.message : String(deleteError);
-      cleanup = `Deleting it also failed (${deleteReason}) — it is still running and must be removed by hand.`;
-    }
+    const cleanup = await discardCreated(deps, created.id);
     throw new Error(
       `Session ${created.id} was created in "${bridge.name}" but its first prompt could not be ` +
       `posted (${reason}). ${cleanup}`,
@@ -426,8 +476,12 @@ export async function unarchiveSession(
   deps: ToolDeps,
   args: { session_id: string },
 ): Promise<{ session: ReturnType<typeof toSummary>; note: string }> {
+  const session = await deps.api.unarchiveSession(args.session_id);
+  // A session of this server that comes back counts towards the ceiling again,
+  // and the registry dropped it when it was found archived.
+  if ((session.tags ?? []).includes(SERVER_TAG)) await deps.registry.add(session.id);
   return {
-    session: toSummary(await deps.api.unarchiveSession(args.session_id)),
+    session: toSummary(session),
     note: "The session is active again, but this does not restart the worker: " +
       "messages sent now are stored and not executed until a client opens the session.",
   };

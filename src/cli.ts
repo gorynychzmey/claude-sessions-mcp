@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 import { SessionsApi } from "./api.js";
 import { createTokenReader } from "./credentials.js";
 import { defaultDiscoveryDeps } from "./discovery.js";
+import { fileRegistry } from "./registry.js";
 import { parseTarget, runTask as runTaskImpl, type GateState, type RunReport } from "./run.js";
 import { reattachSessions } from "./tools.js";
 import { loadConfig } from "./server.js";
@@ -70,6 +71,7 @@ function productionDeps(): CliDeps {
   const api = new SessionsApi({ token: createTokenReader(config.credentialsPath) });
   const toolDeps = {
     api, discovery: defaultDiscoveryDeps(config.claudeConfigDir), maxSpawned: config.maxSpawned,
+    registry: fileRegistry(config.stateDir),
     readFile: (p: string) => readFile(p, "utf8"),
     exec: execPrecheck,
     readState: async (key: string): Promise<GateState | null> => {

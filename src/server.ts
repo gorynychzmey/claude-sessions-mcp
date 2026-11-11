@@ -7,6 +7,7 @@ import { SessionsApi } from "./api.js";
 import { VERSION } from "./version.js";
 import { createTokenReader } from "./credentials.js";
 import { defaultDiscoveryDeps } from "./discovery.js";
+import { fileRegistry } from "./registry.js";
 import {
   ALLOWED_PERMISSION_MODES, archiveSession, deleteSession, listInstances, listSessions,
   readSession, sendMessage, spawnSession, unarchiveSession, waitForIdle, type ToolDeps,
@@ -18,6 +19,8 @@ export interface ServerConfig {
   credentialsPath: string;
   claudeConfigDir: string;
   maxSpawned: number;
+  /** Where the spawn registry lives; shared by the server and the CLI. */
+  stateDir: string;
 }
 
 export function loadConfig(env: NodeJS.ProcessEnv): ServerConfig {
@@ -35,6 +38,8 @@ export function loadConfig(env: NodeJS.ProcessEnv): ServerConfig {
     credentialsPath: env.CLAUDE_CREDENTIALS_PATH ?? join(claudeConfigDir, ".credentials.json"),
     claudeConfigDir,
     maxSpawned: Number(env.CLAUDE_SESSIONS_MCP_MAX_SPAWNED ?? 6),
+    stateDir: env.CLAUDE_SESSIONS_MCP_STATE_DIR ??
+      join(env.XDG_STATE_HOME || join(home, ".local", "state"), "claude-sessions-mcp", "spawned"),
   };
 }
 
@@ -203,6 +208,7 @@ async function main(): Promise<void> {
     api: new SessionsApi({ token }),
     discovery: defaultDiscoveryDeps(config.claudeConfigDir),
     maxSpawned: config.maxSpawned,
+    registry: fileRegistry(config.stateDir),
   };
 
   const handler = createRequestHandler(deps, { allowedHosts: loopbackAllowedHosts(config.port) });

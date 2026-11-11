@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { parseTarget, runTask, VECTOR_TAG } from "../src/run.js";
+import { memoryRegistry } from "../src/registry.js";
 import type { RunDeps } from "../src/run.js";
 
 const bridge = {
@@ -51,7 +52,7 @@ function makeDeps(opts: { frames?: unknown[]; bridges?: typeof bridge[]; archive
     api: {
       createSession, postUserMessage, archiveSession, streamEvents, getSession, listEvents, listSessionsPage,
     },
-    discovery: {}, maxSpawned: 6,
+    discovery: {}, maxSpawned: 6, registry: memoryRegistry(),
     discover: async () => opts.bridges ?? [bridge],
     readFile,
     exec,

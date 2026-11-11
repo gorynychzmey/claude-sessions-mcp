@@ -68,12 +68,21 @@ servers and their workers. The server must run as the same user as the
 bridges it talks to: it reads their process table and the shared credentials
 file, both of which are only visible to that user.
 
-The server keeps no state between calls: no session registry, no database, no
-files of its own. `wait_for_idle` holds an event stream open for the duration
-of that one call, and alongside it polls the session's status, because
-archiving a session cuts its turn short without emitting anything on the
-stream. Both end with the call: nothing is subscribed or watched between
-calls.
+The one piece of state the server keeps is its spawn registry: an empty file
+per session it has spawned, under `$XDG_STATE_HOME/claude-sessions-mcp/spawned/sessions`
+(override the directory with `CLAUDE_SESSIONS_MCP_STATE_DIR`). The spawn
+ceiling is counted from it with one status lookup per entry; archived and
+deleted sessions are dropped as they are found. It replaces counting by paging
+the whole session list, which holds every archived session too and outgrew
+the page cap once the history passed 2000 sessions. On first use the registry
+is seeded once from the full list. The MCP server and the CLI share it, and a
+file per entry keeps their concurrent writes from losing one another's.
+
+Nothing else persists between calls. `wait_for_idle` holds an event stream
+open for the duration of that one call, and alongside it polls the session's
+status, because archiving a session cuts its turn short without emitting
+anything on the stream. Both end with the call: nothing is subscribed or
+watched between calls.
 
 ### After a bridge restart
 
